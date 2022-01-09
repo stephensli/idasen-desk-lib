@@ -1,9 +1,9 @@
 use std::error::Error;
 
-use btleplug::platform::{Manager, Peripheral};
+use btleplug::platform::Manager;
 use clap::Parser;
 use env_logger::Target;
-use log::{log_enabled, Level};
+use log::LevelFilter;
 
 use crate::desk::Desk;
 
@@ -14,6 +14,9 @@ mod error;
 #[derive(Parser, Debug)]
 #[clap(about, version, author)]
 struct Args {
+    #[clap(long, short = 'v')]
+    verbose: bool,
+
     #[clap(long)]
     sit: bool,
 
@@ -26,9 +29,20 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::builder().target(Target::Stdout).init();
-
     let cli_arguments: Args = Args::parse();
+
+    let env = env_logger::Env::default().filter_or("RUST_LOG", "info");
+
+    if cli_arguments.verbose {
+        env_logger::Builder::from_env(env)
+            .filter_level(LevelFilter::Debug)
+            .target(Target::Stdout)
+            .init();
+    } else {
+        env_logger::Builder::from_env(env)
+            .target(Target::Stdout)
+            .init();
+    }
 
     log::debug!("input arguments {:?}", cli_arguments);
 
@@ -36,6 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let desk_peripheral = bluetooth::find_desk_adapter(&manager, true).await?;
 
     let desk = Desk::new(desk_peripheral).await;
+    log::info!("connected to desk: {:?}", desk.name);
 
     // handle the case in which the device target amount was specified. // we allow this being a
     // whole number, e.g 74, which will be later converted into a float value.
@@ -44,9 +59,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if log_enabled!(Level::Debug) {
-        log::debug!(desk.to_string())
-    }
+    log::trace!("{}", desk.to_string());
 
     let current_desk_height = desk.get_height().await?;
     log::debug!("starting desk position {:?}", current_desk_height);

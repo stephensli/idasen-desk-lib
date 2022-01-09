@@ -23,7 +23,7 @@ pub enum Direction {
 }
 
 pub(crate) struct Desk {
-    name: String,
+    pub name: String,
     peripheral: Peripheral,
     desk_properties: PeripheralProperties,
     desk_characteristics: BTreeSet<Characteristic>,
@@ -125,6 +125,8 @@ impl Desk {
 
         let mut previous_height = self.get_height().await?;
         let will_move_up = target > previous_height;
+
+        log::info!("moving desk from {:?} to {:?}", previous_height, target);
 
         loop {
             let height = self.get_height().await?;
