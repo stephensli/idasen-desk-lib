@@ -1,1 +1,1 @@
-# Idasen Standing Desk CLI
+# Idasen Desk Lib

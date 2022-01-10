@@ -6,7 +6,6 @@ use tokio::time;
 
 use crate::error::DeskError;
 
-const PERSONAL_DESK_ADDRESS: [u8; 6] = [0xC2, 0x6D, 0x5B, 0xC4, 0x17, 0x12];
 const RETRY_COUNT: usize = 3;
 
 /// Locate the first adapter on the device. If the device does not support
@@ -62,16 +61,19 @@ async fn find_desk(
 /// returns: Result<Peripheral, DeskError>
 ///
 pub(crate) async fn find_desk_adapter(
+    address: BDAddr,
     manager: &Manager,
     connect: bool,
 ) -> Result<Peripheral, DeskError> {
     let adapter = find_first_adapter(&manager).await.unwrap();
 
-    // start scanning for devices
+    // start scanning for devices, this could probably be something related to polling
+    // instead of this method of scanning. Something that could be started earlier.
+    // This is a little slow and could be faster.
     adapter.start_scan(ScanFilter::default()).await.unwrap();
     time::sleep(Duration::from_secs(3)).await;
 
-    let desk_peripheral = find_desk(PERSONAL_DESK_ADDRESS.into(), &adapter)
+    let desk_peripheral = find_desk(address, &adapter)
         .await?
         .unwrap();
 

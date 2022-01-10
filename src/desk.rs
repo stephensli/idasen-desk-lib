@@ -1,9 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 
-use btleplug::api::{Characteristic, Peripheral as _, PeripheralProperties, WriteType};
-use btleplug::platform::Peripheral;
+use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
+use btleplug::platform::{Manager, Peripheral};
 
-use super::error::DeskError;
+use crate::bluetooth;
 
 static UUID_HEIGHT: &str = "99fa0021-338a-1024-8a49-009c0215f78a";
 static UUID_COMMAND: &str = "99fa0002-338a-1024-8a49-009c0215f78a";
@@ -22,7 +22,7 @@ pub enum Direction {
     Down,
 }
 
-pub(crate) struct Desk {
+pub struct Desk {
     pub name: String,
     peripheral: Peripheral,
     desk_properties: PeripheralProperties,
@@ -31,7 +31,16 @@ pub(crate) struct Desk {
 }
 
 impl Desk {
-    /// Create a new instance of the desk.
+    pub async fn new(mac_address: &str) -> Desk {
+        let manager = Manager::new().await.unwrap();
+
+        let address = mac_address.parse::<BDAddr>().unwrap();
+        let desk_peripheral = bluetooth::find_desk_adapter(address, &manager, true).await.unwrap();
+
+        Desk::from_peripheral(desk_peripheral).await
+    }
+
+    /// Create a new instance of the desk from a bluetooth peripheral.
     ///
     /// # Arguments
     ///
@@ -39,7 +48,7 @@ impl Desk {
     ///
     /// returns: Desk
     ///
-    pub async fn new(peripheral: Peripheral) -> Desk {
+    pub async fn from_peripheral(peripheral: Peripheral) -> Desk {
         let desk_properties = peripheral.properties().await.unwrap().unwrap();
         let desk_characteristics = peripheral.characteristics();
 
@@ -114,13 +123,13 @@ impl Desk {
     /// // valid action
     /// desk.move_to_target(0.74);
     /// ```
-    pub async fn move_to_target(&self, target: f32) -> Result<(), DeskError> {
+    pub async fn move_to_target(&self, target: f32) -> Result<(), super::DeskError> {
         if target > MAX_HEIGHT {
-            return Err(DeskError::TargetHeightTooHigh(target));
+            return Err(super::DeskError::TargetHeightTooHigh(target));
         }
 
         if target < MIN_HEIGHT {
-            return Err(DeskError::TargetHeightTooLow(target));
+            return Err(super::DeskError::TargetHeightTooLow(target));
         }
 
         let mut previous_height = self.get_height().await?;
@@ -146,7 +155,7 @@ impl Desk {
                 || height > previous_height && !will_move_up
             {
                 log::warn!("stopped moving because desk safety feature kicked in.");
-                return Err(DeskError::DeskMoveSafetyKickedIn);
+                return Err(super::DeskError::DeskMoveSafetyKickedIn);
             }
 
             // if we are within our tolerance for moving the desk then we can go and stop the moving.
@@ -187,7 +196,7 @@ impl Desk {
     /// ```
     ///
     /// ```
-    pub async fn move_direction(&self, direction: Direction) -> Result<(), DeskError> {
+    pub async fn move_direction(&self, direction: Direction) -> Result<(), super::DeskError> {
         let command_characteristic = self.characteristics_map.get(UUID_COMMAND).unwrap();
 
         let command = if direction == Direction::Up {
@@ -216,7 +225,7 @@ impl ToString for Desk {
                 "\nuuid: {:?}\nservice uuid: {:?}\nproperties: {:?}\n",
                 x.uuid, x.service_uuid, x.properties
             )
-            .as_str()
+                .as_str()
         }
 
         result
