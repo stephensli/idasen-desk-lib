@@ -90,6 +90,10 @@ pub(crate) async fn find_desk_adapter(
                 if i == RETRY_COUNT {
                     return Err(e.into());
                 }
+
+                // sleep for a small duration to allow some buffer between the connection times, just
+                // so we don't overwhelm the device being connected too.
+                time::sleep(Duration::from_millis(50)).await;
             }
         }
     }
