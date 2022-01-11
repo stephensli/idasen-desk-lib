@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
 use btleplug::platform::{Manager, Peripheral};
+use tokio::time::Instant;
 
 use crate::bluetooth;
 
@@ -11,6 +12,7 @@ static UUID_REFERENCE_INPUT: &str = "99fa0031-338a-1024-8a49-009c0215f78a";
 
 // Not currently used but can be used to determine if the given device is a desk or not. If it is
 // a desk then the services (services_uuid) list will contain this uuid.
+#[allow(dead_code)]
 static UUID_ADV_SVC: &str = "99fa0001-338a-1024-8a49-009c0215f78a";
 
 static MAX_HEIGHT: f32 = 1.27;
@@ -133,19 +135,28 @@ impl Desk {
         }
 
         let mut previous_height = self.get_height().await?;
+        let mut previous_height_read_at = Instant::now();
+
         let will_move_up = target > previous_height;
 
         log::info!("moving desk from {:?} to {:?}", previous_height, target);
 
         loop {
             let height = self.get_height().await?;
+
+            let elapsed_milliseconds = previous_height_read_at.elapsed().as_millis();
             let difference = target - height;
 
+            let speed = (difference.abs() as f64 / elapsed_milliseconds as f64) * 100.0;
+
+
             log::debug!(
-                "target={:?}, height={:?}, difference={:?}",
+                "target={:?}, height={:?}, difference={:?}, time_elapsed_milliseconds={:?}, speed={:?}",
                 target,
                 height,
-                difference
+                difference,
+                elapsed_milliseconds,
+                speed
             );
 
             // the device has a moving action to protect the user if it applies pressure  to
@@ -158,10 +169,21 @@ impl Desk {
                 return Err(super::DeskError::DeskMoveSafetyKickedIn);
             }
 
+            // If we're either:
+            // * less than 20 millimetres, or:
+            // * less than half a second from target
+            // then we need to stop every iteration so that we don't overshoot
+            if difference.abs() < (speed / 2.0).max(0.020) as f32 {
+                log::info!("hit diff stop");
+                let _ = self.stop();
+            }
+
             // if we are within our tolerance for moving the desk then we can go and stop the moving.
             // testing. Additionally ensure to stop first to keep in line with our tolerance.
             // Otherwise a shift in the difference could occur when pulling the final destination.
-            if difference.abs() < 0.005 {
+            //
+            // within 5mm
+            if difference.abs() <= 0.005 {
                 self.stop().await?;
 
                 let height = self.get_height().await?;
@@ -178,6 +200,7 @@ impl Desk {
             }
 
             previous_height = height;
+            previous_height_read_at = Instant::now();
         }
     }
 
