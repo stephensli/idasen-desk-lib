@@ -1,10 +1,15 @@
 use std::collections::{BTreeSet, HashMap};
+use std::env::var;
+use std::sync::Arc;
 
 use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
 use btleplug::platform::{Manager, Peripheral};
+use futures::StreamExt;
+use tokio::sync::RwLock;
 use tokio::time::Instant;
 
-use crate::bluetooth;
+use crate::{bluetooth, DeskError};
+use crate::DeskError::CannotSubscribePosition;
 
 static UUID_HEIGHT: &str = "99fa0021-338a-1024-8a49-009c0215f78a";
 static UUID_COMMAND: &str = "99fa0002-338a-1024-8a49-009c0215f78a";
@@ -26,20 +31,20 @@ pub enum Direction {
 
 pub struct Desk {
     pub name: String,
-    peripheral: Peripheral,
+    peripheral: Arc<RwLock<Peripheral>>,
     desk_properties: PeripheralProperties,
     desk_characteristics: BTreeSet<Characteristic>,
     characteristics_map: HashMap<String, Characteristic>,
 }
 
 impl Desk {
-    pub async fn new(mac_address: &str) -> Desk {
+    pub async fn new(mac_address: &str) -> Result<Desk, DeskError> {
         let manager = Manager::new().await.unwrap();
 
         let address = mac_address.parse::<BDAddr>().unwrap();
-        let desk_peripheral = bluetooth::find_desk_adapter(address, &manager, true).await.unwrap();
+        let desk_peripheral = bluetooth::find_desk_adapter(address, &manager, true).await?;
 
-        Desk::from_peripheral(desk_peripheral).await
+        Ok(Desk::from_peripheral(desk_peripheral).await?)
     }
 
     /// Create a new instance of the desk from a bluetooth peripheral.
@@ -50,22 +55,31 @@ impl Desk {
     ///
     /// returns: Desk
     ///
-    pub async fn from_peripheral(peripheral: Peripheral) -> Desk {
+    pub async fn from_peripheral(peripheral: Peripheral) -> Result<Desk, DeskError> {
         let desk_properties = peripheral.properties().await.unwrap().unwrap();
         let desk_characteristics = peripheral.characteristics();
 
         let name = desk_properties.local_name.as_ref().unwrap();
         let desk_characteristics_map = get_character_map(&desk_characteristics);
 
+        if peripheral.subscribe(desk_characteristics_map.get(UUID_HEIGHT).unwrap()).await.is_err() {
+            return Err(DeskError::CannotSubscribePosition);
+        }
+
         log::debug!("created new instance of device {:?}", name);
 
-        Desk {
+        let desk = Desk {
             name: name.to_string(),
             desk_properties,
-            peripheral,
+            peripheral: Arc::new(RwLock::new(peripheral)),
             desk_characteristics,
             characteristics_map: desk_characteristics_map,
-        }
+        };
+
+        // desk.read_height_notifications().await;
+
+
+        Ok(desk)
     }
 
     /// Get the current height of the desk by communicating over bluetooth
@@ -73,7 +87,7 @@ impl Desk {
     /// returns: <Result<f32, btleplug::Error>
     pub async fn get_height(&self) -> Result<f32, btleplug::Error> {
         let characteristic = self.characteristics_map.get(UUID_HEIGHT).unwrap();
-        let height_value = self.peripheral.read(characteristic).await?;
+        let height_value = self.peripheral.read().await.read(characteristic).await?;
 
         Ok(bytes_to_meters(height_value))
     }
@@ -92,13 +106,13 @@ impl Desk {
         let command_stop = vec![0xFF, 0x00];
         let command_ref_input = vec![0x01, 0x80];
 
+        let per = self.peripheral.read().await;
+
         // we call into both kinds since command char and ref char, linux
         // plays up if and when we use the normal method of calling.
         let (_, _) = tokio::join!(
-            self.peripheral
-                .write(command_char, &command_stop, WriteType::WithoutResponse),
-            self.peripheral
-                .write(ref_char, &command_ref_input, WriteType::WithoutResponse)
+            per.write(command_char, &command_stop, WriteType::WithoutResponse),
+            per.write(ref_char, &command_ref_input, WriteType::WithoutResponse)
         );
 
         Ok(())
@@ -142,18 +156,19 @@ impl Desk {
         log::info!("moving desk from {:?} to {:?}", previous_height, target);
 
         loop {
-            let height = self.get_height().await?;
+            let current_height = self.get_height().await?;
 
             let elapsed_milliseconds = previous_height_read_at.elapsed().as_millis();
-            let difference = target - height;
+            let difference = target - current_height;
 
             let speed = (difference.abs() as f64 / elapsed_milliseconds as f64) * 100.0;
 
 
             log::debug!(
-                "target={:?}, height={:?}, difference={:?}, time_elapsed_milliseconds={:?}, speed={:?}",
+                "target={:?}, current_height={:?} previous_height={:?}, difference={:?}, time_elapsed_milliseconds={:?}, speed={:?}",
                 target,
-                height,
+                current_height,
+                previous_height,
                 difference,
                 elapsed_milliseconds,
                 speed
@@ -162,20 +177,22 @@ impl Desk {
             // the device has a moving action to protect the user if it applies pressure  to
             // something when moving. This will result in the desk moving in the opposite direction
             // when the device detects something. Moving out th way. If we detect this, stop.
-            if (height < previous_height && will_move_up)
-                || height > previous_height && !will_move_up
+            //
+            // only if our difference is not nothing, meaning we are not doing a minor correction.
+            if ((current_height < previous_height && will_move_up)
+                || current_height > previous_height && !will_move_up) && difference > 0.010
             {
                 log::warn!("stopped moving because desk safety feature kicked in.");
                 return Err(super::DeskError::DeskMoveSafetyKickedIn);
             }
 
             // If we're either:
-            // * less than 20 millimetres, or:
+            // * less than 10 millimetres, or:
             // * less than half a second from target
             // then we need to stop every iteration so that we don't overshoot
-            if difference.abs() < (speed / 2.0).max(0.020) as f32 {
+            if difference.abs() < (speed / 2.0).max(0.010) as f32 {
                 log::info!("hit diff stop");
-                let _ = self.stop();
+                self.stop().await?;
             }
 
             // if we are within our tolerance for moving the desk then we can go and stop the moving.
@@ -199,7 +216,7 @@ impl Desk {
                 self.move_direction(Direction::Down).await?;
             }
 
-            previous_height = height;
+            previous_height = self.get_height().await?;
             previous_height_read_at = Instant::now();
         }
     }
@@ -229,10 +246,19 @@ impl Desk {
         };
 
         self.peripheral
+            .read().await
             .write(command_characteristic, &command, WriteType::WithoutResponse)
             .await?;
 
         Ok(())
+    }
+
+    async fn read_height_notifications(&self) {
+        let mut notifications_stream = self.peripheral.read().await.notifications().await.unwrap().take(10);
+
+        while let Some(notification) = notifications_stream.next().await {
+            println!("{:?}", notification);
+        }
     }
 }
 

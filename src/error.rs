@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DeskError {
+    #[error("Cannot subscribe to read position.")]
+    CannotSubscribePosition,
+
     #[error("target height {0} too high")]
     TargetHeightTooHigh(f32),
 
