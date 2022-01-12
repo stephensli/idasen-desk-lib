@@ -73,9 +73,7 @@ pub(crate) async fn find_desk_adapter(
     adapter.start_scan(ScanFilter::default()).await.unwrap();
     time::sleep(Duration::from_secs(3)).await;
 
-    let desk_peripheral = find_desk(address, &adapter)
-        .await?
-        .unwrap();
+    let desk_peripheral = find_desk(address, &adapter).await?.unwrap();
 
     if !connect {
         return Ok(desk_peripheral);
