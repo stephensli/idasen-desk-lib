@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
 use btleplug::platform::{Manager, Peripheral};
@@ -154,19 +155,32 @@ impl Desk {
         let mut previous_height_read_at = Instant::now();
 
         let will_move_up = target > previous_height;
-
         log::info!("moving desk from {:?} to {:?}", previous_height, target);
-        let mut notifications_stream = self.peripheral.read().await.notifications().await?;
+
+        // WIP
+        // WIP
+        // WIP
+        // TODO: update this so that its in another function and we pass in the desk height arch
+        // cloned which would allow it to be able to update the value. This function can then
+        // later be used as a --monitor method to monitor your desk height only
+        let desk_height = Arc::new(Mutex::new(previous_height.clone()));
+
+        let mut previous_height_read_at = Instant::now();
+        let mut notifications_stream = self.peripheral.read().await.notifications().await?.take(1000);
+        let thread_data = desk_height.clone();
 
         let _handle = tokio::spawn(async move {
             while let Some(notification) = notifications_stream.next().await {
                 let notified_height = bytes_to_meters(notification.value.clone());
-                log::debug!("desk height notification {:?}", notified_height);
+                *thread_data.lock().unwrap() = notified_height;
             }
         });
+        // WIP
+        // WIP
+        // WIP
 
         loop {
-            let current_height = self.get_height().await?;
+            let current_height = *desk_height.lock().unwrap();
 
             let elapsed_milliseconds = previous_height_read_at.elapsed().as_millis();
             let difference = target - current_height;
@@ -200,7 +214,8 @@ impl Desk {
             // * less than 10 millimetres, or:
             // * less than half a second from target
             // then we need to stop every iteration so that we don't overshoot
-            if difference.abs() < (speed / 2.0).max(0.010) as f32 {
+            // if difference.abs() < (speed / 2.0).max(0.01) as f32 {
+            if difference.abs() < 0.01 as f32 {
                 log::info!("hit diff stop");
                 self.stop().await?;
             }
@@ -209,11 +224,11 @@ impl Desk {
             // testing. Additionally ensure to stop first to keep in line with our tolerance.
             // Otherwise a shift in the difference could occur when pulling the final destination.
             //
-            // within 5mm
-            if difference.abs() <= 0.005 {
+            // within 3mm
+            if difference.abs() <= 0.003 {
                 self.stop().await?;
 
-                let height = self.get_height().await?;
+                let height = *desk_height.lock().unwrap();
 
                 log::info!("reached target of {:?}, actual: {:?}", target, height);
 
@@ -226,8 +241,10 @@ impl Desk {
                 self.move_direction(Direction::Down).await?;
             }
 
-            previous_height = self.get_height().await?;
+            previous_height = *desk_height.lock().unwrap();
             previous_height_read_at = Instant::now();
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -277,7 +294,7 @@ impl ToString for Desk {
                 "\nuuid: {:?}\nservice uuid: {:?}\nproperties: {:?}\n",
                 x.uuid, x.service_uuid, x.properties
             )
-            .as_str()
+                .as_str()
         }
 
         result
