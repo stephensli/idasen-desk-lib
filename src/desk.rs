@@ -183,16 +183,23 @@ impl Desk {
             let current_height = *desk_height.lock().unwrap();
 
             let elapsed_milliseconds = previous_height_read_at.elapsed().as_millis();
-            let difference = target - current_height;
 
-            let speed = (difference.abs() as f64 / elapsed_milliseconds as f64) * 100.0;
+            let difference = target - current_height;
+            let difference_abs = difference.abs();
+
+            let speed = (difference_abs as f64 / elapsed_milliseconds as f64) * 100.0;
 
             log::debug!(
-                "target={:?}, current_height={:?} previous_height={:?}, difference={:?}, time_elapsed_milliseconds={:?}, speed={:?}",
+                "target={:?}, \
+                current_height={:?} \
+                previous_height={:?}, \
+                difference={:?}, \
+                time_elapsed_milliseconds={:?}, \
+                speed={:?}",
                 target,
                 current_height,
                 previous_height,
-                difference,
+                difference_abs,
                 elapsed_milliseconds,
                 speed
             );
@@ -204,7 +211,7 @@ impl Desk {
             // only if our difference is not nothing, meaning we are not doing a minor correction.
             if ((current_height < previous_height && will_move_up)
                 || current_height > previous_height && !will_move_up)
-                && difference > 0.010
+                && difference_abs > 0.010
             {
                 log::warn!("stopped moving because desk safety feature kicked in.");
                 return Err(super::DeskError::DeskMoveSafetyKickedIn);
@@ -215,7 +222,7 @@ impl Desk {
             // * less than half a second from target
             // then we need to stop every iteration so that we don't overshoot
             // if difference.abs() < (speed / 2.0).max(0.01) as f32 {
-            if difference.abs() < 0.01 as f32 {
+            if difference_abs < 0.01 as f32 {
                 log::info!("hit diff stop");
                 self.stop().await?;
             }
@@ -225,11 +232,10 @@ impl Desk {
             // Otherwise a shift in the difference could occur when pulling the final destination.
             //
             // within 3mm
-            if difference.abs() <= 0.003 {
+            if difference_abs <= 0.003 {
                 self.stop().await?;
 
                 let height = *desk_height.lock().unwrap();
-
                 log::info!("reached target of {:?}, actual: {:?}", target, height);
 
                 return Ok(());
