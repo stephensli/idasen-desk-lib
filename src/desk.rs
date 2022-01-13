@@ -187,15 +187,10 @@ impl Desk {
             let difference = target - current_height;
             let difference_abs = difference.abs();
 
+            // speed in meters per second.
             let speed = (difference_abs as f64 / elapsed_milliseconds as f64) * 100.0;
 
-            log::debug!(
-                "target={:?}, \
-                current_height={:?} \
-                previous_height={:?}, \
-                difference={:?}, \
-                time_elapsed_milliseconds={:?}, \
-                speed={:?}",
+            log_basic_desk_information(
                 target,
                 current_height,
                 previous_height,
@@ -305,6 +300,22 @@ impl ToString for Desk {
 
         result
     }
+}
+
+/// Debug log some basic properties when moving the desk.   
+///
+fn log_basic_desk_information(
+    target: f32,
+    current_height: f32,
+    previous_height: f32,
+    difference: f32,
+    time_elapsed: u128,
+    speed: f64,
+) {
+    log::debug!(
+        "target={target}, current_height={current_height} previous_height={previous_height}, \
+    difference={difference}, time_elapsed={time_elapsed}, speed={speed}"
+    );
 }
 
 /// Helper to convert the provided BTreeSet to a map to easily access the characteristics based on
