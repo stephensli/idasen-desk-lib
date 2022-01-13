@@ -1,6 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-
-use std::sync::{Arc, Mutex};
+se std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
@@ -203,7 +202,8 @@ impl Desk {
             // something when moving. This will result in the desk moving in the opposite direction
             // when the device detects something. Moving out th way. If we detect this, stop.
             //
-            // only if our difference is not nothing, meaning we are not doing a minor correction.
+            // only if our difference is not less than 10mm, meaning we are not doing a minor
+            // correction, which might mean moving back up and down again.
             if ((current_height < previous_height && will_move_up)
                 || current_height > previous_height && !will_move_up)
                 && difference_abs > 0.010
@@ -212,26 +212,24 @@ impl Desk {
                 return Err(super::DeskError::DeskMoveSafetyKickedIn);
             }
 
-            // If we're either:
-            // * less than 10 millimetres, or:
-            // * less than half a second from target
-            // then we need to stop every iteration so that we don't overshoot
-            // if difference.abs() < (speed / 2.0).max(0.01) as f32 {
-            if difference_abs < 0.01 as f32 {
-                log::info!("hit diff stop");
+            // If we are either less than 10 millimetres, or less than half a second from target
+            // then we need to stop every iteration so that we don't overshoot or reduce it.
+            if difference.abs() < (speed / 2.0).max(0.01) as f32 {
+                // if difference_abs < 0.01 as f32 {
+                log::debug!("difference ({difference_abs}) below 10mm or below speed/2 ({speed}), applying stopping pressure");
                 self.stop().await?;
             }
 
             // if we are within our tolerance for moving the desk then we can go and stop the moving.
-            // testing. Additionally ensure to stop first to keep in line with our tolerance.
-            // Otherwise a shift in the difference could occur when pulling the final destination.
+            // Additionally ensure to stop first to keep in line with our tolerance. Otherwise a
+            // shift in the difference could occur when pulling the final destination.
             //
             // within 3mm
             if difference_abs <= 0.003 {
                 self.stop().await?;
 
                 let height = *desk_height.lock().unwrap();
-                log::info!("reached target of {:?}, actual: {:?}", target, height);
+                log::info!("reached target of {target}, actual: {height}");
 
                 return Ok(());
             }
@@ -245,6 +243,10 @@ impl Desk {
             previous_height = *desk_height.lock().unwrap();
             previous_height_read_at = Instant::now();
 
+            // ensure to sleep a small amount, allowing the device becomes overwhelmed and results
+            // in the program stopping before anything being actioned and our shift failing.
+            //
+            // currently the value is: 50ms, this might be reduced to improve / reduce overshoot.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
