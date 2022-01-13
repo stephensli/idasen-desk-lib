@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-se std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
@@ -151,8 +151,6 @@ impl Desk {
         }
 
         let mut previous_height = self.get_height().await?;
-        let mut previous_height_read_at = Instant::now();
-
         let will_move_up = target > previous_height;
         log::info!("moving desk from {:?} to {:?}", previous_height, target);
 
@@ -165,22 +163,11 @@ impl Desk {
         let desk_height = Arc::new(Mutex::new(previous_height.clone()));
 
         let mut previous_height_read_at = Instant::now();
-        let mut notifications_stream = self.peripheral.read().await.notifications().await?.take(1000);
-        let thread_data = desk_height.clone();
 
-        let _handle = tokio::spawn(async move {
-            while let Some(notification) = notifications_stream.next().await {
-                let notified_height = bytes_to_meters(notification.value.clone());
-                *thread_data.lock().unwrap() = notified_height;
-            }
-        });
-        // WIP
-        // WIP
-        // WIP
+        let _ = self.monitor_height_notification_stream(desk_height.clone());
 
         loop {
             let current_height = *desk_height.lock().unwrap();
-
             let elapsed_milliseconds = previous_height_read_at.elapsed().as_millis();
 
             let difference = target - current_height;
@@ -195,10 +182,10 @@ impl Desk {
                 previous_height,
                 difference_abs,
                 elapsed_milliseconds,
-                speed
+                speed,
             );
 
-            // the device has a moving action to protect the user if it applies pressure  to
+            // the device has a moving action to protect the user if it applies pressure to
             // something when moving. This will result in the desk moving in the opposite direction
             // when the device detects something. Moving out th way. If we detect this, stop.
             //
@@ -283,6 +270,26 @@ impl Desk {
 
         Ok(())
     }
+
+    async fn monitor_height_notification_stream(
+        &self,
+        height_reference: Arc<Mutex<f32>>,
+    ) -> Result<tokio::task::JoinHandle<()>, DeskError> {
+        let mut notifications_stream = self
+            .peripheral
+            .read()
+            .await
+            .notifications()
+            .await?
+            .take(1000);
+
+        Ok(tokio::spawn(async move {
+            while let Some(notification) = notifications_stream.next().await {
+                let notified_height = bytes_to_meters(notification.value.clone());
+                *height_reference.lock().unwrap() = notified_height;
+            }
+        }))
+    }
 }
 
 impl ToString for Desk {
@@ -297,7 +304,7 @@ impl ToString for Desk {
                 "\nuuid: {:?}\nservice uuid: {:?}\nproperties: {:?}\n",
                 x.uuid, x.service_uuid, x.properties
             )
-                .as_str()
+            .as_str()
         }
 
         result
