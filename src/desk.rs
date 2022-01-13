@@ -271,17 +271,28 @@ impl Desk {
         Ok(())
     }
 
-    async fn monitor_height_notification_stream(
+    /// creates a new thread to listen to all incoming height changes from the desk.
+    /// updating the passed in reference value with the new height value in meters.
+    ///
+    /// There could be a chance that the notification fails to created and a DeskError is created.
+    ///
+    /// # Arguments
+    ///
+    /// * `height_reference`:
+    ///
+    /// returns: Result<JoinHandle<()>, DeskError>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let desk_height = Arc::new(Mutex::new(0.0));
+    /// let handle = desk.monitor_height_notification_stream(desk_height.clone);
+    /// ```
+    pub async fn monitor_height_notification_stream(
         &self,
         height_reference: Arc<Mutex<f32>>,
     ) -> Result<tokio::task::JoinHandle<()>, DeskError> {
-        let mut notifications_stream = self
-            .peripheral
-            .read()
-            .await
-            .notifications()
-            .await?
-            .take(1000);
+        let mut notifications_stream = self.peripheral.read().await.notifications().await?;
 
         Ok(tokio::spawn(async move {
             while let Some(notification) = notifications_stream.next().await {
