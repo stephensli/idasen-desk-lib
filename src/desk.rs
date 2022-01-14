@@ -1,5 +1,4 @@
 use std::collections::{BTreeSet, HashMap};
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -152,8 +151,6 @@ impl Desk {
         }
 
         let mut previous_height = self.get_height().await?;
-        let mut previous_height_read_at = Instant::now();
-
         let will_move_up = target > previous_height;
         log::info!("moving desk from {:?} to {:?}", previous_height, target);
 
@@ -166,49 +163,34 @@ impl Desk {
         let desk_height = Arc::new(Mutex::new(previous_height.clone()));
 
         let mut previous_height_read_at = Instant::now();
-        let mut notifications_stream = self.peripheral.read().await.notifications().await?.take(1000);
-        let thread_data = desk_height.clone();
 
-        let _handle = tokio::spawn(async move {
-            while let Some(notification) = notifications_stream.next().await {
-                let notified_height = bytes_to_meters(notification.value.clone());
-                *thread_data.lock().unwrap() = notified_height;
-            }
-        });
-        // WIP
-        // WIP
-        // WIP
+        let _ = self.monitor_height_notification_stream(desk_height.clone());
 
         loop {
             let current_height = *desk_height.lock().unwrap();
-
             let elapsed_milliseconds = previous_height_read_at.elapsed().as_millis();
 
             let difference = target - current_height;
             let difference_abs = difference.abs();
 
+            // speed in meters per second.
             let speed = (difference_abs as f64 / elapsed_milliseconds as f64) * 100.0;
 
-            log::debug!(
-                "target={:?}, \
-                current_height={:?} \
-                previous_height={:?}, \
-                difference={:?}, \
-                time_elapsed_milliseconds={:?}, \
-                speed={:?}",
+            log_basic_desk_information(
                 target,
                 current_height,
                 previous_height,
                 difference_abs,
                 elapsed_milliseconds,
-                speed
+                speed,
             );
 
-            // the device has a moving action to protect the user if it applies pressure  to
+            // the device has a moving action to protect the user if it applies pressure to
             // something when moving. This will result in the desk moving in the opposite direction
             // when the device detects something. Moving out th way. If we detect this, stop.
             //
-            // only if our difference is not nothing, meaning we are not doing a minor correction.
+            // only if our difference is not less than 10mm, meaning we are not doing a minor
+            // correction, which might mean moving back up and down again.
             if ((current_height < previous_height && will_move_up)
                 || current_height > previous_height && !will_move_up)
                 && difference_abs > 0.010
@@ -217,26 +199,24 @@ impl Desk {
                 return Err(super::DeskError::DeskMoveSafetyKickedIn);
             }
 
-            // If we're either:
-            // * less than 10 millimetres, or:
-            // * less than half a second from target
-            // then we need to stop every iteration so that we don't overshoot
-            // if difference.abs() < (speed / 2.0).max(0.01) as f32 {
-            if difference_abs < 0.01 as f32 {
-                log::info!("hit diff stop");
+            // If we are either less than 10 millimetres, or less than half a second from target
+            // then we need to stop every iteration so that we don't overshoot or reduce it.
+            if difference.abs() < (speed / 2.0).max(0.01) as f32 {
+                // if difference_abs < 0.01 as f32 {
+                log::debug!("difference ({difference_abs}) below 10mm or below speed/2 ({speed}), applying stopping pressure");
                 self.stop().await?;
             }
 
             // if we are within our tolerance for moving the desk then we can go and stop the moving.
-            // testing. Additionally ensure to stop first to keep in line with our tolerance.
-            // Otherwise a shift in the difference could occur when pulling the final destination.
+            // Additionally ensure to stop first to keep in line with our tolerance. Otherwise a
+            // shift in the difference could occur when pulling the final destination.
             //
             // within 3mm
             if difference_abs <= 0.003 {
                 self.stop().await?;
 
                 let height = *desk_height.lock().unwrap();
-                log::info!("reached target of {:?}, actual: {:?}", target, height);
+                log::info!("reached target of {target}, actual: {height}");
 
                 return Ok(());
             }
@@ -250,6 +230,10 @@ impl Desk {
             previous_height = *desk_height.lock().unwrap();
             previous_height_read_at = Instant::now();
 
+            // ensure to sleep a small amount, allowing the device becomes overwhelmed and results
+            // in the program stopping before anything being actioned and our shift failing.
+            //
+            // currently the value is: 50ms, this might be reduced to improve / reduce overshoot.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -286,6 +270,37 @@ impl Desk {
 
         Ok(())
     }
+
+    /// creates a new thread to listen to all incoming height changes from the desk.
+    /// updating the passed in reference value with the new height value in meters.
+    ///
+    /// There could be a chance that the notification fails to created and a DeskError is created.
+    ///
+    /// # Arguments
+    ///
+    /// * `height_reference`:
+    ///
+    /// returns: Result<JoinHandle<()>, DeskError>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let desk_height = Arc::new(Mutex::new(0.0));
+    /// let handle = desk.monitor_height_notification_stream(desk_height.clone);
+    /// ```
+    pub async fn monitor_height_notification_stream(
+        &self,
+        height_reference: Arc<Mutex<f32>>,
+    ) -> Result<tokio::task::JoinHandle<()>, DeskError> {
+        let mut notifications_stream = self.peripheral.read().await.notifications().await?;
+
+        Ok(tokio::spawn(async move {
+            while let Some(notification) = notifications_stream.next().await {
+                let notified_height = bytes_to_meters(notification.value.clone());
+                *height_reference.lock().unwrap() = notified_height;
+            }
+        }))
+    }
 }
 
 impl ToString for Desk {
@@ -300,11 +315,27 @@ impl ToString for Desk {
                 "\nuuid: {:?}\nservice uuid: {:?}\nproperties: {:?}\n",
                 x.uuid, x.service_uuid, x.properties
             )
-                .as_str()
+            .as_str()
         }
 
         result
     }
+}
+
+/// Debug log some basic properties when moving the desk.   
+///
+fn log_basic_desk_information(
+    target: f32,
+    current_height: f32,
+    previous_height: f32,
+    difference: f32,
+    time_elapsed: u128,
+    speed: f64,
+) {
+    log::debug!(
+        "target={target}, current_height={current_height} previous_height={previous_height}, \
+    difference={difference}, time_elapsed={time_elapsed}, speed={speed}"
+    );
 }
 
 /// Helper to convert the provided BTreeSet to a map to easily access the characteristics based on
