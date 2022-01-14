@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use btleplug::api::{BDAddr, Characteristic, Peripheral as _, PeripheralProperties, WriteType};
 use btleplug::platform::{Manager, Peripheral};
-use futures::StreamExt;
+use futures::{StreamExt};
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
@@ -164,7 +164,7 @@ impl Desk {
 
         let mut previous_height_read_at = Instant::now();
 
-        let _ = self.monitor_height_notification_stream(desk_height.clone());
+        let _ = self.monitor_height_notification_stream(desk_height.clone()).await?;
 
         loop {
             let current_height = *desk_height.lock().unwrap();
@@ -315,7 +315,7 @@ impl ToString for Desk {
                 "\nuuid: {:?}\nservice uuid: {:?}\nproperties: {:?}\n",
                 x.uuid, x.service_uuid, x.properties
             )
-            .as_str()
+                .as_str()
         }
 
         result
